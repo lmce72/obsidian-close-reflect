@@ -1,0 +1,132 @@
+/* Close Reflect — styles for the reflection overlay.
+   Colours, radii and shadows come from Obsidian's own variables; nothing is hard-coded
+   here, and no runtime stylesheet is injected. */
+
+.close-reflect-overlay {
+	position: fixed;
+	inset: 0;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	background-color: rgba(0, 0, 0, 0.45);
+	/* z-index is set inline: it has to clear Obsidian's own quit overlay at 10000, which
+	   is a functional constant rather than a theme value. */
+}
+
+.close-reflect-panel {
+	max-width: 460px;
+	width: calc(100% - 2 * var(--size-4-4));
+	max-height: 80vh;
+	overflow-y: auto;
+	padding: var(--size-4-4) var(--size-4-5);
+	background-color: var(--background-primary);
+	border: 1px solid var(--background-modifier-border);
+	border-radius: var(--radius-m);
+	box-shadow: var(--shadow-l);
+}
+
+.close-reflect-panel:focus {
+	outline: none;
+}
+
+.close-reflect-title {
+	margin-bottom: var(--size-4-3);
+	font-size: var(--font-ui-medium);
+	font-weight: var(--font-semibold);
+	color: var(--text-normal);
+}
+
+.close-reflect-body {
+	line-height: 1.7;
+	color: var(--text-normal);
+}
+
+/* The body is Markdown, so trim the block margins Obsidian's prose styles add at the
+   edges of the panel. */
+.close-reflect-body > :first-child {
+	margin-top: 0;
+}
+
+.close-reflect-body > :last-child {
+	margin-bottom: 0;
+}
+
+.close-reflect-panel .modal-button-container {
+	margin-top: var(--size-4-4);
+}
+
+.close-reflect-setting-textarea {
+	width: 100%;
+	min-height: 12em;
+	font-family: var(--font-monospace);
+}
+
+/* ── Edit modal ─────────────────────────────────────────────────────────── */
+
+/* Two columns: editing on the left, live preview on the right. */
+.close-reflect-edit-grid {
+	display: grid;
+	grid-template-columns: 1fr 1fr;
+	gap: var(--size-4-4);
+	align-items: start;
+}
+
+/* Obsidian's modal is sized for a single column; this one holds two. */
+.close-reflect-edit-modal {
+	width: 900px;
+	max-width: 95vw;
+}
+
+/* Grid children refuse to shrink below their content without this, and the
+   editor's own width then pushes the modal wider than the viewport. */
+.close-reflect-edit-left,
+.close-reflect-edit-right {
+	min-width: 0;
+}
+
+/* The preview is the real panel on a stand-in backdrop. */
+.close-reflect-edit-right .close-reflect-preview {
+	padding: var(--size-4-4);
+	background-color: var(--background-secondary);
+	border: 1px solid var(--background-modifier-border);
+	border-radius: var(--radius-m);
+}
+
+.close-reflect-edit-right .close-reflect-panel {
+	width: 100%;
+	max-width: none;
+	box-shadow: var(--shadow-s);
+}
+
+/* CodeMirror collapses to a single line unless the host gives it a height. */
+.close-reflect-editor-host {
+	min-height: 18em;
+	max-height: 45vh;
+	overflow-y: auto;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: var(--radius-s);
+}
+
+.close-reflect-button-list {
+	display: flex;
+	flex-direction: column;
+	gap: var(--size-4-2);
+}
+
+.close-reflect-button-row {
+	display: flex;
+	align-items: center;
+	gap: var(--size-4-2);
+}
+
+.close-reflect-button-row .close-reflect-button-target {
+	flex: 1;
+	min-width: 0;
+}
+
+/* Stack the columns when the window is too narrow for two. */
+@media (max-width: 720px) {
+	.close-reflect-edit-grid {
+		grid-template-columns: 1fr;
+	}
+}

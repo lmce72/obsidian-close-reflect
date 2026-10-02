@@ -1,0 +1,28 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["DOM", "DOM.Iterable", "ES2022"],
+
+    // Bun strips types without checking them; this config exists for `bun run typecheck`,
+    // so it type-checks but never emits.
+    "noEmit": true,
+
+    // obsidian.d.ts pulls in CodeMirror's types, which are large and not ours to fix.
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "resolveJsonModule": true,
+    "forceConsistentCasingInFileNames": true,
+
+    // The plugin is loaded as a CommonJS bundle, but the sources are written as ES modules
+    // and bun rewrites the format on the way out.
+    "verbatimModuleSyntax": false,
+
+    "types": ["node", "obsidian"],
+
+    "strict": false,
+    "useUnknownInCatchVariables": false
+  },
+  "include": ["src/**/*.ts"]
+}
