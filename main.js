@@ -6,6 +6,39 @@ var import_obsidian2 = require("obsidian");
 
 // src/render.ts
 var import_obsidian = require("obsidian");
+var INTERACTIVE_CONTENT_SELECTOR = [
+  "a",
+  "button",
+  "input",
+  "select",
+  "textarea",
+  "[data-href]",
+  '[contenteditable="true"]',
+  '[role="button"]',
+  ".internal-link",
+  ".external-link",
+  ".internal-embed",
+  ".markdown-embed"
+].join(", ");
+function installEmbedNavigation(host, open) {
+  host.addEventListener("click", (event) => {
+    const target = event.target;
+    if (!target || typeof target.closest !== "function")
+      return;
+    const embed = target.closest(".internal-embed");
+    if (!embed)
+      return;
+    const ownHandler = "a, img, button, input, textarea, select, [data-href], " + ".internal-link, .external-link, .markdown-embed-link";
+    if (target.closest(ownHandler))
+      return;
+    const linktext = embed.getAttribute("src");
+    if (!linktext)
+      return;
+    event.preventDefault();
+    event.stopPropagation();
+    open(linktext);
+  }, true);
+}
 function renderReflection(app, host, component, data, options) {
   const panel = host.createDiv({ cls: "close-reflect-panel" });
   panel.createDiv({ cls: "close-reflect-title", text: data.title });
@@ -13,6 +46,8 @@ function renderReflection(app, host, component, data, options) {
   import_obsidian.MarkdownRenderer.render(app, data.content, body, "", component).catch((error) => {
     console.error("[close-reflect] markdown render failed:", error);
   });
+  if (options.onOpenEmbed)
+    installEmbedNavigation(body, options.onOpenEmbed);
   const row = panel.createDiv({ cls: "modal-button-container" });
   const accentIndex = data.buttons.findIndex((button) => button.action === "stay");
   for (let i = 0;i < data.buttons.length; i++) {
@@ -42,6 +77,19 @@ class ReflectOverlay {
   rootEl = null;
   panelEl = null;
   keyHandler = null;
+  contentClickHandler = (event) => {
+    const target = event.target;
+    if (!target || typeof target.closest !== "function")
+      return;
+    if (!target.closest(INTERACTIVE_CONTENT_SELECTOR))
+      return;
+    window.setTimeout(() => {
+      if (this.closed)
+        return;
+      this.outcome = { kind: "cancel" };
+      this.close();
+    }, 0);
+  };
   constructor(app, options) {
     this.app = app;
     this.options = options;
@@ -61,6 +109,9 @@ class ReflectOverlay {
       onChoose: (button) => {
         this.outcome = { kind: "button", button };
         this.close();
+      },
+      onOpenEmbed: (linktext) => {
+        this.app.workspace.openLinkText(linktext, "", false);
       }
     });
     panel.setAttribute("tabindex", "-1");
@@ -78,6 +129,7 @@ class ReflectOverlay {
       }
     };
     document.addEventListener("keydown", this.keyHandler, true);
+    panel.addEventListener("click", this.contentClickHandler, true);
     this.rootEl = root;
     this.panelEl = panel;
     panel.focus();
@@ -90,6 +142,7 @@ class ReflectOverlay {
       document.removeEventListener("keydown", this.keyHandler, true);
       this.keyHandler = null;
     }
+    this.panelEl?.removeEventListener("click", this.contentClickHandler, true);
     this.renderHost.unload();
     this.rootEl?.remove();
     this.rootEl = null;
@@ -916,7 +969,12 @@ class ContentEditModal extends import_obsidian5.Modal {
         title: this.draft.title,
         content: this.draft.content,
         buttons: this.draft.buttons
-      }, { interactive: false });
+      }, {
+        interactive: false,
+        onOpenEmbed: (linktext) => {
+          this.app.workspace.openLinkText(linktext, "", false);
+        }
+      });
     } catch (error) {
       console.error("[close-reflect] preview render failed:", error);
     }

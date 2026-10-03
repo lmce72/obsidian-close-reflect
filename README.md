@@ -6,6 +6,14 @@ to look at where you are before you leave.
 The prompt has an editable title, Markdown body, and as many action buttons as you want.
 Buttons can cancel the quit, let the app close, open a note, run a command, or open a URL.
 
+The body is real Markdown, so wikilinks, external links, embeds, Meta Bind controls and task
+checkboxes all work inside it — and embeds are clickable anywhere on their body, which they
+are not by default. Clicking something that does anything cancels the quit and steps the
+prompt aside: you are going somewhere, not leaving.
+
+Remember the prompt is desktop-only, and it depends on Obsidian internals that a future
+release could change.
+
 ## How the interception works
 
 Obsidian does not make this easy, and the interesting part of this plugin is the three

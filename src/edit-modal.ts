@@ -233,7 +233,14 @@ export class ContentEditModal extends Modal {
 					content: this.draft.content,
 					buttons: this.draft.buttons
 				},
-				{ interactive: false }
+				{
+					interactive: false,
+					// The buttons stay inert — they would drive the quit — but embeds are
+					// navigation, so they stay clickable for checking what a note points at.
+					onOpenEmbed: ( linktext ) => {
+						void this.app.workspace.openLinkText( linktext, '', false );
+					}
+				}
 			);
 		} catch ( error ) {
 			console.error( '[close-reflect] preview render failed:', error );

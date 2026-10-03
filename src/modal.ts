@@ -1,5 +1,5 @@
 import { App, Component } from 'obsidian';
-import { renderReflection } from './render';
+import { INTERACTIVE_CONTENT_SELECTOR, renderReflection } from './render';
 import type { ReflectButton, ReflectOutcome } from './types';
 
 /**
@@ -47,6 +47,30 @@ export class ReflectOverlay {
 	private panelEl: HTMLElement | null = null;
 	private keyHandler: ( ( event: KeyboardEvent ) => void ) | null = null;
 
+	/**
+	 * Cancels the quit when the body's own content is interacted with.
+	 *
+	 * The reflection body can hold anything the renderer produces — wikilinks, external
+	 * links, embeds, Meta Bind controls, task checkboxes. Whatever it is, clicking it means
+	 * the user is going somewhere rather than quitting, so the quit is always cancelled and
+	 * the overlay steps aside; the click itself is left untouched so the content still does
+	 * what it would have done.
+	 *
+	 * The teardown is deferred a tick because it removes the element the click is on, and
+	 * doing that mid-dispatch can stop the click's own handler from ever running.
+	 */
+	private readonly contentClickHandler = ( event: MouseEvent ): void => {
+		const target = event.target as HTMLElement | null;
+		if ( !target || typeof target.closest !== 'function' ) return;
+		if ( !target.closest( INTERACTIVE_CONTENT_SELECTOR ) ) return;
+
+		window.setTimeout( () => {
+			if ( this.closed ) return;
+			this.outcome = { kind: 'cancel' };
+			this.close();
+		}, 0 );
+	};
+
 	constructor( app: App, options: ReflectOverlayOptions ) {
 		this.app = app;
 		this.options = options;
@@ -74,6 +98,9 @@ export class ReflectOverlay {
 				onChoose: ( button ) => {
 					this.outcome = { kind: 'button', button: button };
 					this.close();
+				},
+				onOpenEmbed: ( linktext ) => {
+					void this.app.workspace.openLinkText( linktext, '', false );
 				}
 			}
 		);
@@ -97,6 +124,8 @@ export class ReflectOverlay {
 		};
 		document.addEventListener( 'keydown', this.keyHandler, true );
 
+		panel.addEventListener( 'click', this.contentClickHandler, true );
+
 		this.rootEl = root;
 		this.panelEl = panel;
 		panel.focus();
@@ -110,6 +139,7 @@ export class ReflectOverlay {
 			document.removeEventListener( 'keydown', this.keyHandler, true );
 			this.keyHandler = null;
 		}
+		this.panelEl?.removeEventListener( 'click', this.contentClickHandler, true );
 		this.renderHost.unload();
 		this.rootEl?.remove();
 		this.rootEl = null;
