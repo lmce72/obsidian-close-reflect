@@ -338,16 +338,30 @@ class ButtonListEditor {
 }
 
 // src/markdown-editor.ts
-function loadModule(id) {
-  const requireFn = window.require ?? require;
-  if (!requireFn)
-    return null;
-  try {
-    return requireFn(id);
-  } catch (error) {
-    console.error(`[close-reflect] cannot load ${id}:`, error);
-    return null;
+function requireCandidates() {
+  const candidates = [];
+  const fromWindow = window.require;
+  if (typeof fromWindow === "function")
+    candidates.push(fromWindow);
+  if (require !== fromWindow) {
+    candidates.push(require);
   }
+  return candidates;
+}
+function loadModule(id) {
+  let lastError = null;
+  for (const requireFn of requireCandidates()) {
+    try {
+      const loaded = requireFn(id);
+      if (loaded)
+        return loaded;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  if (lastError)
+    console.error(`[close-reflect] cannot load ${id}:`, lastError);
+  return null;
 }
 var obsidian = null;
 var CmState = null;

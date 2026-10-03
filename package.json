@@ -1,6 +1,6 @@
 {
   "name": "obsidian-close-reflect",
-  "version": "1.1.1",
+  "version": "1.1.2",
   "private": true,
   "description": "Intercept Obsidian's quit and show a reflection modal before the window closes.",
   "author": "CoreVortex",

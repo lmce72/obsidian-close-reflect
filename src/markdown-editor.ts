@@ -54,16 +54,42 @@ export interface MarkdownEditorHandle {
  * function happens to be there first may not be the one that can resolve `@codemirror/*`.
  * Holding on to it would latch that failure exactly the way holding on to the modules did.
  */
-function loadModule( id: string ): any {
-	const requireFn = ( window as unknown as { require?: ( id: string ) => unknown } ).require
-		?? ( typeof require === 'function' ? require as ( id: string ) => unknown : null );
-	if (!requireFn) return null;
-	try {
-		return requireFn( id );
-	} catch (error) {
-		console.error( `[close-reflect] cannot load ${id}:`, error );
-		return null;
+/**
+ * Every require worth trying, in order.
+ *
+ * `window.require` is not always the one that can resolve `@codemirror/*` — it may be the
+ * Electron one, or a patched one that does not carry that module — so the plugin's own
+ * `require`, which goes through Obsidian's module table, is tried as well. Trying one and
+ * giving up is what produced a "cannot load @codemirror/view" while the module was in fact
+ * reachable by the other.
+ */
+function requireCandidates(): Array<( id: string ) => unknown> {
+	const candidates: Array<( id: string ) => unknown> = [];
+
+	const fromWindow = ( window as unknown as { require?: ( id: string ) => unknown } ).require;
+	if ( typeof fromWindow === 'function' ) candidates.push( fromWindow );
+
+	if ( typeof require === 'function' && require !== fromWindow ) {
+		candidates.push( require as ( id: string ) => unknown );
 	}
+
+	return candidates;
+}
+
+function loadModule( id: string ): any {
+	let lastError: unknown = null;
+
+	for ( const requireFn of requireCandidates() ) {
+		try {
+			const loaded = requireFn( id );
+			if ( loaded ) return loaded;
+		} catch (error) {
+			lastError = error;
+		}
+	}
+
+	if ( lastError ) console.error( `[close-reflect] cannot load ${id}:`, lastError );
+	return null;
 }
 
 /*
