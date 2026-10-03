@@ -46,11 +46,17 @@ export interface MarkdownEditorHandle {
 	destroy(): void;
 }
 
-/** The plugin's own module loader. Obsidian exposes `require` to plugins on desktop. */
-const requireFn = ( window as unknown as { require?: ( id: string ) => unknown } ).require
-	?? ( typeof require === 'function' ? require as ( id: string ) => unknown : null );
-
+/**
+ * The plugin's own module loader.
+ *
+ * The require function is looked up per call, not captured once at module evaluation:
+ * `window.require` is patched in by another plugin (CodeScript Toolkit), so whichever
+ * function happens to be there first may not be the one that can resolve `@codemirror/*`.
+ * Holding on to it would latch that failure exactly the way holding on to the modules did.
+ */
 function loadModule( id: string ): any {
+	const requireFn = ( window as unknown as { require?: ( id: string ) => unknown } ).require
+		?? ( typeof require === 'function' ? require as ( id: string ) => unknown : null );
 	if (!requireFn) return null;
 	try {
 		return requireFn( id );
@@ -60,9 +66,35 @@ function loadModule( id: string ): any {
 	}
 }
 
-const obsidian = loadModule( 'obsidian' );
-const CmState = loadModule( '@codemirror/state' );
-const CmView = loadModule( '@codemirror/view' );
+/*
+ * Resolved on first use rather than at module evaluation.
+ *
+ * `@codemirror/*` is resolved through `window.require`, which is patched by CodeScript
+ * Toolkit — a plugin that may not have loaded yet when this module is evaluated. Resolving
+ * once at load would latch the failure for the whole session, which is exactly what the race
+ * looks like from the outside: a "cannot load @codemirror/state" on startup, and a textarea
+ * for the rest of the day. Resolving lazily means the editor still comes up on the first
+ * open, and a failed attempt is simply retried next time.
+ */
+let obsidian: any = null;
+let CmState: any = null;
+let CmView: any = null;
+
+function ensureModules(): boolean {
+	if ( obsidian && CmState && CmView ) return true;
+
+	const obsidianModule = loadModule( 'obsidian' );
+	const cmState = loadModule( '@codemirror/state' );
+	const cmView = loadModule( '@codemirror/view' );
+	if ( !obsidianModule || !cmState || !cmView || !cmState.EditorSelection || !cmView.EditorView ) {
+		return false;
+	}
+
+	obsidian = obsidianModule;
+	CmState = cmState;
+	CmView = cmView;
+	return true;
+}
 
 /**
  * Whether the embedded editor can be built at all.
@@ -71,11 +103,7 @@ const CmView = loadModule( '@codemirror/view' );
  * and the caller must fall back to a textarea rather than crash.
  */
 export function isMarkdownEditorAvailable(): boolean {
-	return !!( obsidian && CmState && CmState.EditorSelection && CmView && CmView.EditorView );
-}
-
-if (!isMarkdownEditorAvailable()) {
-	console.warn( '[close-reflect] the embedded Markdown editor is unavailable; the edit modal will use a textarea' );
+	return ensureModules();
 }
 
 // ── Resolving Obsidian's internal editor base class ──────────────────────────
@@ -88,6 +116,7 @@ let baseClassCache: any = null;
  */
 function resolveEditorPrototype( app: App ): any {
 	if (baseClassCache) return baseClassCache;
+	if ( !ensureModules() ) throw new Error( 'the CodeMirror modules are unavailable' );
 
 	const registry = ( app as unknown as { embedRegistry?: any } ).embedRegistry;
 	if (!registry || !registry.embedByExtension) {

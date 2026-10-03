@@ -338,8 +338,8 @@ class ButtonListEditor {
 }
 
 // src/markdown-editor.ts
-var requireFn = window.require ?? require;
 function loadModule(id) {
+  const requireFn = window.require ?? require;
   if (!requireFn)
     return null;
   try {
@@ -349,19 +349,32 @@ function loadModule(id) {
     return null;
   }
 }
-var obsidian = loadModule("obsidian");
-var CmState = loadModule("@codemirror/state");
-var CmView = loadModule("@codemirror/view");
-function isMarkdownEditorAvailable() {
-  return !!(obsidian && CmState && CmState.EditorSelection && CmView && CmView.EditorView);
+var obsidian = null;
+var CmState = null;
+var CmView = null;
+function ensureModules() {
+  if (obsidian && CmState && CmView)
+    return true;
+  const obsidianModule = loadModule("obsidian");
+  const cmState = loadModule("@codemirror/state");
+  const cmView = loadModule("@codemirror/view");
+  if (!obsidianModule || !cmState || !cmView || !cmState.EditorSelection || !cmView.EditorView) {
+    return false;
+  }
+  obsidian = obsidianModule;
+  CmState = cmState;
+  CmView = cmView;
+  return true;
 }
-if (!isMarkdownEditorAvailable()) {
-  console.warn("[close-reflect] the embedded Markdown editor is unavailable; the edit modal will use a textarea");
+function isMarkdownEditorAvailable() {
+  return ensureModules();
 }
 var baseClassCache = null;
 function resolveEditorPrototype(app) {
   if (baseClassCache)
     return baseClassCache;
+  if (!ensureModules())
+    throw new Error("the CodeMirror modules are unavailable");
   const registry = app.embedRegistry;
   if (!registry || !registry.embedByExtension) {
     throw new Error("app.embedRegistry is unavailable (an Obsidian internal that may have changed)");
