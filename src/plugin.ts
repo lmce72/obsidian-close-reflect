@@ -1,4 +1,6 @@
-import { normalizePath, Plugin, TFile } from 'obsidian';
+import { normalizePath, Platform, Plugin, TFile } from 'obsidian';
+import { getCapacitorApp, listenForAppState, listenForBackButton, minimizeApp, removeListener } from './mobile-back';
+import type { CapacitorAppPlugin, CapacitorAppState, CapacitorListenerHandle } from './mobile-back';
 import { ReflectOverlay } from './modal';
 import { splitFrontmatter, stripFrontmatter } from './note-text';
 import { CloseReflectSettingTab } from './settings';
@@ -29,14 +31,31 @@ let traceEnabled = false;
 function syncTraceSwitch(enabled: boolean): void {
 	traceEnabled = enabled;
 }
-const traceRequire = ( window as unknown as { require?: ( id: string ) => unknown } ).require
-	?? ( typeof require === 'function' ? require : null );
-const traceFs = traceRequire
-	? traceRequire('fs') as { appendFileSync( path: string, data: string ): void }
-	: null;
-const tracePath = traceRequire
-	? ( traceRequire('os') as { tmpdir(): string } ).tmpdir() + '/close-reflect-trace.log'
-	: null;
+/*
+ * Node's `fs` and `os` are resolved defensively: on mobile there is no Node at all, and the
+ * shim Obsidian loads plugins with throws for anything it does not know. An uncaught throw
+ * here would take the whole plugin down at load, so a missing trace sink simply means the
+ * trace is off.
+ */
+function loadNodeModule( id: string ): any {
+	for ( const requireFn of [
+		( window as unknown as { require?: ( id: string ) => unknown } ).require,
+		typeof require === 'function' ? require as ( id: string ) => unknown : null
+	] ) {
+		if ( typeof requireFn !== 'function' ) continue;
+		try {
+			const loaded = requireFn( id );
+			if ( loaded ) return loaded;
+		} catch (error) {
+			// Try the next one; only a total failure matters, and that is not an error here.
+		}
+	}
+	return null;
+}
+
+const traceFs = loadNodeModule( 'fs' ) as { appendFileSync( path: string, data: string ): void } | null;
+const traceOs = loadNodeModule( 'os' ) as { tmpdir(): string } | null;
+const tracePath = traceFs && traceOs ? `${traceOs.tmpdir()}/close-reflect-trace.log` : null;
 
 /** Append one line synchronously, so it survives a process that is about to die. */
 function trace( message: string, extra?: Record<string, unknown> ): void {
@@ -143,6 +162,13 @@ export default class CloseReflectPlugin extends Plugin {
 	/** TEMPORARY: fast liveness ticker, so the trace shows when the renderer stopped. */
 	private traceTimer: number | null = null;
 
+	/** Obsidian mobile's Capacitor App plugin, once it has been reached. */
+	private capacitorApp: CapacitorAppPlugin | null = null;
+	/** The back-button subscription, so it can be removed when its toggle goes off. */
+	private mobileBackHandle: CapacitorListenerHandle | null = null;
+	/** The app-state subscription, likewise. */
+	private mobileStateHandle: CapacitorListenerHandle | null = null;
+
 	/** The main window's `close` listener, once it has been installed. */
 	private mainWindowGuard: { win: RemoteWindow; handler: ( event: RemoteCloseEvent ) => void } | null = null;
 	/**
@@ -156,7 +182,7 @@ export default class CloseReflectPlugin extends Plugin {
 	private pendingCloseEvent: RemoteCloseEvent | null = null;
 
 	async onload(): Promise<void> {
-		trace('onload:begin', { tracePath: tracePath, hasRequire: !!traceRequire });
+		trace('onload:begin', { tracePath: tracePath, mobile: Platform.isMobileApp, desktop: Platform.isDesktopApp });
 		this.unloaded = false;
 		await this.loadSettings();
 		this.addSettingTab(new CloseReflectSettingTab(this.app, this));
@@ -179,6 +205,7 @@ export default class CloseReflectPlugin extends Plugin {
 		this.registerDomEvent(window, 'beforeunload', (event: BeforeUnloadEvent) => this.handleBeforeUnload(event));
 		this.installWindowClosePatch();
 		this.installMainWindowGuard();
+		this.syncMobileHandlers();
 
 		// Plugins can load before the layout finalize step that installs the hook, so look
 		// again once the workspace is up.
@@ -201,6 +228,10 @@ export default class CloseReflectPlugin extends Plugin {
 		trace('onunload');
 		this.unloaded = true;
 		this.pendingCloseEvent = null;
+		removeListener( this.mobileBackHandle );
+		removeListener( this.mobileStateHandle );
+		this.mobileBackHandle = null;
+		this.mobileStateHandle = null;
 		this.stopHeartbeat();
 		this.holding = false;
 		this.clearVeto('unload');
@@ -278,6 +309,8 @@ export default class CloseReflectPlugin extends Plugin {
 		await this.saveData(this.settings);
 		// The developer-log switch also gates the trace, and must apply without a reload.
 		syncTraceSwitch(this.settings.logToConsole);
+		// Likewise the mobile gesture toggles.
+		this.syncMobileHandlers();
 	}
 
 	/** Quits interrupted so far this session. */
@@ -486,14 +519,13 @@ export default class CloseReflectPlugin extends Plugin {
 		this.holding = false;
 
 		try {
-			if (this.letsTheQuitThrough(outcome)) {
-				this.log('quit allowed through:', describeOutcome(outcome));
-				this.allowTheQuit();
+			if (this.letsTheAppGo(outcome)) {
+				this.log('exit allowed through:', describeOutcome(outcome));
+				this.allowTheExit();
 				return this.writeDiagnostic('quit-settled', { outcome: describeOutcome(outcome) });
 			}
 
-			this.raiseVeto();
-			this.dismissSavingOverlay();
+			this.cancelTheExit();
 
 			if (outcome.kind === 'button' && outcome.button.action !== 'stay') {
 				// Fire and forget: performButtonAction never throws, and the quit is already
@@ -513,12 +545,39 @@ export default class CloseReflectPlugin extends Plugin {
 	}
 
 	/**
+	 * Let the app go.
+	 *
+	 * On desktop that means letting Obsidian finish the quit it started. On mobile there is no
+	 * quit to finish — the back button is not a quit, and nothing is being held — so the app is
+	 * sent to the background, which is exactly what Obsidian's own second back press does.
+	 */
+	private allowTheExit(): void {
+		if ( Platform.isMobileApp ) {
+			if ( this.capacitorApp ) minimizeApp( this.capacitorApp );
+			return;
+		}
+		this.allowTheQuit();
+	}
+
+	/**
+	 * Keep the app.
+	 *
+	 * On desktop the quit has to be actively cancelled, which is what the veto and the saving
+	 * screen are for. On mobile nothing is held, so the prompt closing is the whole of it.
+	 */
+	private cancelTheExit(): void {
+		if ( Platform.isMobileApp ) return;
+		this.raiseVeto();
+		this.dismissSavingOverlay();
+	}
+
+	/**
 	 * Whether this outcome lets the app close.
 	 *
 	 * Only a button whose action is "let the app close" does. An unanswered prompt follows the
 	 * timeout action; a dismissed overlay and every other button cancel the quit.
 	 */
-	private letsTheQuitThrough(outcome: ReflectOutcome): boolean {
+	private letsTheAppGo(outcome: ReflectOutcome): boolean {
 		// Nothing was shown, so there is nothing to answer — always release.
 		if (outcome.kind === 'error') return true;
 		if (outcome.kind === 'timeout') return this.settings.timeoutAction === 'leave';
@@ -738,6 +797,9 @@ export default class CloseReflectPlugin extends Plugin {
 	 * plugin behaves exactly as before, three-second ceiling included.
 	 */
 	private installMainWindowGuard(): void {
+		// The guard exists to stop Obsidian's main process force-closing the window. There is
+		// no such process on mobile, and no `@electron/remote` either.
+		if ( !Platform.isDesktopApp ) return;
 		try {
 			const host = window as unknown as { electron?: RemoteElectron; electronWindow?: RemoteWindow };
 			const remote = host.electron?.remote;
@@ -815,6 +877,109 @@ export default class CloseReflectPlugin extends Plugin {
 			trace('mainWindowGuard:close-marked', { reason: reason, holding: this.holding, veto: this.veto });
 		} catch (error) {
 			this.error('failed to mark the window close event:', error);
+		}
+	}
+
+	// ── Mobile ─────────────────────────────────────────────────────────────────
+
+	/**
+	 * Subscribe to whichever leaving gestures the user has turned on.
+	 *
+	 * Re-run whenever settings are saved, so a toggle takes effect without a reload. Each
+	 * subscription is installed once, and removed when its toggle goes off.
+	 */
+	private syncMobileHandlers(): void {
+		if ( !Platform.isMobileApp ) return;
+
+		if ( ( this.settings.mobileBackButton || this.settings.mobileGoingHome ) && !this.capacitorApp ) {
+			this.capacitorApp = getCapacitorApp();
+			if ( !this.capacitorApp ) {
+				this.warn( 'the Capacitor App plugin is unreachable; the leaving gestures are left alone' );
+				return;
+			}
+		}
+
+		if ( this.settings.mobileBackButton && !this.mobileBackHandle && this.capacitorApp ) {
+			this.mobileBackHandle = listenForBackButton( this.capacitorApp, () => this.handleMobileBack() );
+		} else if ( !this.settings.mobileBackButton && this.mobileBackHandle ) {
+			removeListener( this.mobileBackHandle );
+			this.mobileBackHandle = null;
+		}
+
+		if ( this.settings.mobileGoingHome && !this.mobileStateHandle && this.capacitorApp ) {
+			this.mobileStateHandle = listenForAppState( this.capacitorApp, ( state ) => this.handleMobileAppState( state ) );
+		} else if ( !this.settings.mobileGoingHome && this.mobileStateHandle ) {
+			removeListener( this.mobileStateHandle );
+			this.mobileStateHandle = null;
+		}
+	}
+
+	/**
+	 * A back press.
+	 *
+	 * Capacitor delivers the event to every listener and offers no way to stop the others, so
+	 * this runs alongside Obsidian's own handler rather than replacing it — it can answer the
+	 * presses that matter and let the rest through. The ones that matter are the presses
+	 * Obsidian would use to leave; a press with somewhere to go back to is navigation.
+	 */
+	private handleMobileBack(): void {
+		if ( !this.isAboutToLeave() ) return;
+		this.showMobilePrompt( 'back button' );
+	}
+
+	/**
+	 * The app is heading to the home screen.
+	 *
+	 * Nothing can be cancelled here — the app is already leaving — so the prompt it raises is
+	 * one to be found on the way back in.
+	 */
+	private handleMobileAppState( state: CapacitorAppState ): void {
+		if ( state && state.isActive === false ) this.showMobilePrompt( 'home screen' );
+	}
+
+	private showMobilePrompt( trigger: string ): void {
+		if ( this.holding ) return;
+		if ( this.interceptCount >= this.settings.intercepts ) {
+			this.log( `interception budget spent; ignoring the ${trigger}` );
+			return;
+		}
+
+		this.interceptCount += 1;
+		this.holding = true;
+		this.log( `intercepting the ${trigger} (#${this.interceptCount})` );
+
+		// Nothing is being held on mobile, so every failure path can simply let go.
+		void this.showModal()
+			.then( ( outcome ) => this.applyOutcome( outcome ) )
+			.catch( ( error ) => {
+				this.holding = false;
+				this.error( 'showing the prompt failed:', error );
+			} );
+	}
+
+	/**
+	 * Whether Obsidian's own back handling is about to leave the app rather than navigate.
+	 *
+	 * Mirroring that condition is what keeps the prompt off the back gesture's normal job:
+	 * Obsidian only reaches "press back again to exit" once both sidebars are collapsed and
+	 * the active leaf has nothing left to go back to.
+	 */
+	private isAboutToLeave(): boolean {
+		try {
+			const workspace = this.app.workspace as unknown as {
+				leftSplit?: { collapsed?: boolean };
+				rightSplit?: { collapsed?: boolean };
+				activeLeaf?: { history?: { backHistory?: unknown[] } };
+			};
+
+			const sidesClosed = ( workspace.leftSplit?.collapsed ?? true )
+				&& ( workspace.rightSplit?.collapsed ?? true );
+			if ( !sidesClosed ) return false;
+
+			return ( workspace.activeLeaf?.history?.backHistory?.length ?? 0 ) === 0;
+		} catch (error) {
+			this.error( 'could not read the workspace state; not intercepting this back press:', error );
+			return false;
 		}
 	}
 

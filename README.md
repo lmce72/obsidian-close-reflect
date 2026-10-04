@@ -11,8 +11,8 @@ checkboxes all work inside it — and embeds are clickable anywhere on their bod
 are not by default. Clicking something that does anything cancels the quit and steps the
 prompt aside: you are going somewhere, not leaving.
 
-Remember the prompt is desktop-only, and it depends on Obsidian internals that a future
-release could change.
+The plugin depends on Obsidian internals that a future release could change — see
+Limitations.
 
 ## How the interception works
 
@@ -46,6 +46,28 @@ repeats what its `hide()` does — remove the container and drop the `in-progres
 Every failure path fails open: an unanswered prompt follows the configured timeout action,
 and a prompt that could not be shown at all releases the quit, so a broken overlay can never
 leave the app unclosable.
+
+## On mobile
+
+Mobile has no quit to intercept — the `quit` event is fired from inside Obsidian's Electron
+hook, which mobile does not have. What it has instead are gestures, and the plugin answers
+two of them, each behind its own toggle:
+
+| Gesture | What happens |
+| --- | --- |
+| Back button | The prompt appears when the back button *would leave the app*. A press with a note to go back to, or a sidebar to collapse, is navigation and is left alone — the plugin mirrors the condition Obsidian's own handler uses. |
+| Going back to the home screen | The prompt is raised as the app is backgrounded, and is waiting when you come back. |
+
+There is an asymmetry worth knowing. Capacitor delivers the back button to every listener and
+offers no way to stop the others, so this runs *alongside* Obsidian's handler rather than
+replacing it: pressing back twice in quick succession still sends the app to the background,
+because that second press is Obsidian's. And backgrounding cannot be cancelled at all — the
+app is already gone — which is why that second toggle is off by default and why "cancel the
+quit" on mobile simply means the prompt closes.
+
+The obvious way to take the gesture over, `removeAllListeners()`, is not used: it drops every
+other listener Obsidian registered for that plugin too — URI opens, share intents, app state
+— and leaves the app worse off.
 
 ## The edit modal
 
@@ -82,6 +104,8 @@ a plain textarea.
 | When the timeout expires | Cancel the quit and stay open, or let the app close. Cancelling is the default. |
 | Write diagnostics to a file | Appends one entry per quit attempt inside the vault. |
 | Developer log | Echoes diagnostics to the console and writes a step-by-step trace to `close-reflect-trace.log` in the system temp folder. |
+| Ask on the back button | Mobile only. |
+| Ask on going back to the home screen | Mobile only, off by default. |
 
 ## Limitations
 
@@ -90,8 +114,11 @@ a plain textarea.
 - Registering a quit task breaks **Reload app without saving**: the reload command closes the
   window instead of reloading. Disable the plugin if you need that command.
 - The interception relies on Obsidian internals (`@electron/remote`, the shape of its quit
-  hook, and the progress-screen markup). A future Obsidian release could change any of them;
-  each is guarded and falls back rather than breaking the app.
+  hook, the progress-screen markup, and on mobile the Capacitor bridge and the shape of
+  Obsidian's own back handling). A future Obsidian release could change any of them; each is
+  guarded and falls back rather than breaking the app.
+- The prompt is a speed bump, not a lock: on desktop it holds the quit, but on mobile
+  Obsidian's own second back press still backgrounds the app.
 
 ## Data and privacy
 

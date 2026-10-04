@@ -99,7 +99,7 @@ export class ReflectOverlay {
 					this.outcome = { kind: 'button', button: button };
 					this.close();
 				},
-				onOpenEmbed: ( linktext ) => {
+				onOpenLink: ( linktext ) => {
 					void this.app.workspace.openLinkText( linktext, '', false );
 				}
 			}

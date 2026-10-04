@@ -1,6 +1,55 @@
 // src/plugin.ts
 var import_obsidian7 = require("obsidian");
 
+// src/mobile-back.ts
+function getCapacitorApp() {
+  try {
+    const capacitor = window.Capacitor;
+    if (!capacitor)
+      return null;
+    const fromPlugins = capacitor.Plugins?.App;
+    if (fromPlugins && typeof fromPlugins.addListener === "function")
+      return fromPlugins;
+    if (typeof capacitor.registerPlugin === "function") {
+      const registered = capacitor.registerPlugin("App");
+      if (registered && typeof registered.addListener === "function")
+        return registered;
+    }
+  } catch (error) {
+    console.error("[close-reflect] could not reach the Capacitor App plugin:", error);
+  }
+  return null;
+}
+function listenForBackButton(app, handler) {
+  return listen(app, "backButton", handler);
+}
+function listenForAppState(app, handler) {
+  return listen(app, "appStateChange", handler);
+}
+function listen(app, event, handler) {
+  try {
+    const handle = app.addListener(event, handler);
+    return handle ?? {};
+  } catch (error) {
+    console.error(`[close-reflect] could not listen for ${event}:`, error);
+    return null;
+  }
+}
+function removeListener(handle) {
+  try {
+    handle?.remove?.();
+  } catch (error) {
+    console.error("[close-reflect] could not remove a Capacitor listener:", error);
+  }
+}
+function minimizeApp(app) {
+  try {
+    app.minimizeApp?.();
+  } catch (error) {
+    console.error("[close-reflect] could not minimize the app:", error);
+  }
+}
+
 // src/modal.ts
 var import_obsidian2 = require("obsidian");
 
@@ -20,11 +69,23 @@ var INTERACTIVE_CONTENT_SELECTOR = [
   ".internal-embed",
   ".markdown-embed"
 ].join(", ");
-function installEmbedNavigation(host, open) {
+function installLinkNavigation(host, open) {
   host.addEventListener("click", (event) => {
     const target = event.target;
     if (!target || typeof target.closest !== "function")
       return;
+    if (event.button !== 0 || event.ctrlKey || event.metaKey || event.altKey || event.shiftKey)
+      return;
+    const link = target.closest("a.internal-link, a[data-href], .internal-link[data-href]");
+    if (link) {
+      const linktext2 = link.getAttribute("data-href");
+      if (!linktext2)
+        return;
+      event.preventDefault();
+      event.stopPropagation();
+      open(linktext2);
+      return;
+    }
     const embed = target.closest(".internal-embed");
     if (!embed)
       return;
@@ -46,8 +107,8 @@ function renderReflection(app, host, component, data, options) {
   import_obsidian.MarkdownRenderer.render(app, data.content, body, "", component).catch((error) => {
     console.error("[close-reflect] markdown render failed:", error);
   });
-  if (options.onOpenEmbed)
-    installEmbedNavigation(body, options.onOpenEmbed);
+  if (options.onOpenLink)
+    installLinkNavigation(body, options.onOpenLink);
   const row = panel.createDiv({ cls: "modal-button-container" });
   const accentIndex = data.buttons.findIndex((button) => button.action === "stay");
   for (let i = 0;i < data.buttons.length; i++) {
@@ -110,7 +171,7 @@ class ReflectOverlay {
         this.outcome = { kind: "button", button };
         this.close();
       },
-      onOpenEmbed: (linktext) => {
+      onOpenLink: (linktext) => {
         this.app.workspace.openLinkText(linktext, "", false);
       }
     });
@@ -236,7 +297,9 @@ var DEFAULT_SETTINGS = {
   timeoutAction: "stay",
   writeDiagnostics: true,
   diagPath: "Components/History/closeReflectDiag.json",
-  logToConsole: false
+  logToConsole: false,
+  mobileBackButton: true,
+  mobileGoingHome: false
 };
 var LEGACY_DEFAULT_LABEL_STAY = "有没做的，先做";
 var LEGACY_DEFAULT_LABEL_LEAVE = "都做了";
@@ -971,7 +1034,7 @@ class ContentEditModal extends import_obsidian5.Modal {
         buttons: this.draft.buttons
       }, {
         interactive: false,
-        onOpenEmbed: (linktext) => {
+        onOpenLink: (linktext) => {
           this.app.workspace.openLinkText(linktext, "", false);
         }
       });
@@ -1091,6 +1154,17 @@ class CloseReflectSettingTab extends import_obsidian6.PluginSettingTab {
       settings.timeoutAction = value;
       await save();
     }));
+    if (import_obsidian6.Platform.isMobileApp) {
+      new import_obsidian6.Setting(containerEl).setName("Mobile").setHeading();
+      new import_obsidian6.Setting(containerEl).setName("Ask on the back button").setDesc("The prompt appears when the back button would leave the app. A press with somewhere to go back to is navigation and is left alone.").addToggle((toggle) => toggle.setValue(settings.mobileBackButton).onChange(async (value) => {
+        settings.mobileBackButton = value;
+        await save();
+      }));
+      new import_obsidian6.Setting(containerEl).setName("Ask on going back to the home screen").setDesc("The prompt appears when the app is sent to the background, and is waiting when you come back. That gesture cannot be cancelled, and switching apps briefly counts, so this is off by default.").addToggle((toggle) => toggle.setValue(settings.mobileGoingHome).onChange(async (value) => {
+        settings.mobileGoingHome = value;
+        await save();
+      }));
+    }
     new import_obsidian6.Setting(containerEl).setName("Diagnostics").setHeading();
     new import_obsidian6.Setting(containerEl).setName("Write diagnostics to a file").setDesc("Appends one entry per quit attempt: which layers covered the overlay, and whether frames were still being produced.").addToggle((toggle) => toggle.setValue(settings.writeDiagnostics).onChange(async (value) => {
       settings.writeDiagnostics = value;
@@ -1155,9 +1229,24 @@ var traceEnabled = false;
 function syncTraceSwitch(enabled) {
   traceEnabled = enabled;
 }
-var traceRequire = window.require ?? require;
-var traceFs = traceRequire ? traceRequire("fs") : null;
-var tracePath = traceRequire ? traceRequire("os").tmpdir() + "/close-reflect-trace.log" : null;
+function loadNodeModule(id) {
+  for (const requireFn of [
+    window.require,
+    require
+  ]) {
+    if (typeof requireFn !== "function")
+      continue;
+    try {
+      const loaded = requireFn(id);
+      if (loaded)
+        return loaded;
+    } catch (error) {}
+  }
+  return null;
+}
+var traceFs = loadNodeModule("fs");
+var traceOs = loadNodeModule("os");
+var tracePath = traceFs && traceOs ? `${traceOs.tmpdir()}/close-reflect-trace.log` : null;
 function trace(message, extra) {
   if (!TRACE_ENABLED || !traceEnabled || !traceFs || !tracePath)
     return;
@@ -1191,10 +1280,13 @@ class CloseReflectPlugin extends import_obsidian7.Plugin {
   heartbeatTimer = null;
   heartbeatTick = 0;
   traceTimer = null;
+  capacitorApp = null;
+  mobileBackHandle = null;
+  mobileStateHandle = null;
   mainWindowGuard = null;
   pendingCloseEvent = null;
   async onload() {
-    trace("onload:begin", { tracePath, hasRequire: !!traceRequire });
+    trace("onload:begin", { tracePath, mobile: import_obsidian7.Platform.isMobileApp, desktop: import_obsidian7.Platform.isDesktopApp });
     this.unloaded = false;
     await this.loadSettings();
     this.addSettingTab(new CloseReflectSettingTab(this.app, this));
@@ -1206,6 +1298,7 @@ class CloseReflectPlugin extends import_obsidian7.Plugin {
     this.registerDomEvent(window, "beforeunload", (event) => this.handleBeforeUnload(event));
     this.installWindowClosePatch();
     this.installMainWindowGuard();
+    this.syncMobileHandlers();
     this.app.workspace.onLayoutReady(() => {
       if (!this.unloaded)
         this.captureObsidianQuitHook();
@@ -1224,6 +1317,10 @@ class CloseReflectPlugin extends import_obsidian7.Plugin {
     trace("onunload");
     this.unloaded = true;
     this.pendingCloseEvent = null;
+    removeListener(this.mobileBackHandle);
+    removeListener(this.mobileStateHandle);
+    this.mobileBackHandle = null;
+    this.mobileStateHandle = null;
     this.stopHeartbeat();
     this.holding = false;
     this.clearVeto("unload");
@@ -1283,6 +1380,7 @@ class CloseReflectPlugin extends import_obsidian7.Plugin {
   async saveSettings() {
     await this.saveData(this.settings);
     syncTraceSwitch(this.settings.logToConsole);
+    this.syncMobileHandlers();
   }
   getInterceptCount() {
     return this.interceptCount;
@@ -1423,13 +1521,12 @@ class CloseReflectPlugin extends import_obsidian7.Plugin {
     this.stopHeartbeat();
     this.holding = false;
     try {
-      if (this.letsTheQuitThrough(outcome)) {
-        this.log("quit allowed through:", describeOutcome(outcome));
-        this.allowTheQuit();
+      if (this.letsTheAppGo(outcome)) {
+        this.log("exit allowed through:", describeOutcome(outcome));
+        this.allowTheExit();
         return this.writeDiagnostic("quit-settled", { outcome: describeOutcome(outcome) });
       }
-      this.raiseVeto();
-      this.dismissSavingOverlay();
+      this.cancelTheExit();
       if (outcome.kind === "button" && outcome.button.action !== "stay") {
         performButtonAction(this.app, outcome.button, (message, error) => this.error(message, error));
       }
@@ -1438,7 +1535,21 @@ class CloseReflectPlugin extends import_obsidian7.Plugin {
     }
     return this.writeDiagnostic("quit-settled", { outcome: describeOutcome(outcome) });
   }
-  letsTheQuitThrough(outcome) {
+  allowTheExit() {
+    if (import_obsidian7.Platform.isMobileApp) {
+      if (this.capacitorApp)
+        minimizeApp(this.capacitorApp);
+      return;
+    }
+    this.allowTheQuit();
+  }
+  cancelTheExit() {
+    if (import_obsidian7.Platform.isMobileApp)
+      return;
+    this.raiseVeto();
+    this.dismissSavingOverlay();
+  }
+  letsTheAppGo(outcome) {
     if (outcome.kind === "error")
       return true;
     if (outcome.kind === "timeout")
@@ -1590,6 +1701,8 @@ class CloseReflectPlugin extends import_obsidian7.Plugin {
     }
   }
   installMainWindowGuard() {
+    if (!import_obsidian7.Platform.isDesktopApp)
+      return;
     try {
       const host = window;
       const remote = host.electron?.remote;
@@ -1632,6 +1745,65 @@ class CloseReflectPlugin extends import_obsidian7.Plugin {
       trace("mainWindowGuard:close-marked", { reason, holding: this.holding, veto: this.veto });
     } catch (error) {
       this.error("failed to mark the window close event:", error);
+    }
+  }
+  syncMobileHandlers() {
+    if (!import_obsidian7.Platform.isMobileApp)
+      return;
+    if ((this.settings.mobileBackButton || this.settings.mobileGoingHome) && !this.capacitorApp) {
+      this.capacitorApp = getCapacitorApp();
+      if (!this.capacitorApp) {
+        this.warn("the Capacitor App plugin is unreachable; the leaving gestures are left alone");
+        return;
+      }
+    }
+    if (this.settings.mobileBackButton && !this.mobileBackHandle && this.capacitorApp) {
+      this.mobileBackHandle = listenForBackButton(this.capacitorApp, () => this.handleMobileBack());
+    } else if (!this.settings.mobileBackButton && this.mobileBackHandle) {
+      removeListener(this.mobileBackHandle);
+      this.mobileBackHandle = null;
+    }
+    if (this.settings.mobileGoingHome && !this.mobileStateHandle && this.capacitorApp) {
+      this.mobileStateHandle = listenForAppState(this.capacitorApp, (state) => this.handleMobileAppState(state));
+    } else if (!this.settings.mobileGoingHome && this.mobileStateHandle) {
+      removeListener(this.mobileStateHandle);
+      this.mobileStateHandle = null;
+    }
+  }
+  handleMobileBack() {
+    if (!this.isAboutToLeave())
+      return;
+    this.showMobilePrompt("back button");
+  }
+  handleMobileAppState(state) {
+    if (state && state.isActive === false)
+      this.showMobilePrompt("home screen");
+  }
+  showMobilePrompt(trigger) {
+    if (this.holding)
+      return;
+    if (this.interceptCount >= this.settings.intercepts) {
+      this.log(`interception budget spent; ignoring the ${trigger}`);
+      return;
+    }
+    this.interceptCount += 1;
+    this.holding = true;
+    this.log(`intercepting the ${trigger} (#${this.interceptCount})`);
+    this.showModal().then((outcome) => this.applyOutcome(outcome)).catch((error) => {
+      this.holding = false;
+      this.error("showing the prompt failed:", error);
+    });
+  }
+  isAboutToLeave() {
+    try {
+      const workspace = this.app.workspace;
+      const sidesClosed = (workspace.leftSplit?.collapsed ?? true) && (workspace.rightSplit?.collapsed ?? true);
+      if (!sidesClosed)
+        return false;
+      return (workspace.activeLeaf?.history?.backHistory?.length ?? 0) === 0;
+    } catch (error) {
+      this.error("could not read the workspace state; not intercepting this back press:", error);
+      return false;
     }
   }
   handleBeforeUnload(event) {

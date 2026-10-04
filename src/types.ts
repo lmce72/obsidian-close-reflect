@@ -132,6 +132,20 @@ export interface CloseReflectSettings {
 	diagPath: string;
 	/** Echo the same diagnostics to the developer console. */
 	logToConsole: boolean;
+	/**
+	 * Mobile only: answer the hardware back button when Obsidian is about to leave the app.
+	 *
+	 * Only when it would actually leave — a back press with a note to go back to, or a sidebar
+	 * to collapse, is navigation and is left alone.
+	 */
+	mobileBackButton: boolean;
+	/**
+	 * Mobile only: answer the "go back to the home screen" gesture.
+	 *
+	 * That gesture cannot be cancelled, so the prompt raised here is one to be found on the
+	 * way back into the app. Off by default: switching apps briefly is not leaving.
+	 */
+	mobileGoingHome: boolean;
 }
 
 export const DEFAULT_SETTINGS: CloseReflectSettings = {
@@ -160,7 +174,9 @@ export const DEFAULT_SETTINGS: CloseReflectSettings = {
 	timeoutAction: 'stay',
 	writeDiagnostics: true,
 	diagPath: 'Components/History/closeReflectDiag.json',
-	logToConsole: false
+	logToConsole: false,
+	mobileBackButton: true,
+	mobileGoingHome: false
 };
 
 /*

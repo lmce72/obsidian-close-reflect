@@ -237,7 +237,7 @@ export class ContentEditModal extends Modal {
 					interactive: false,
 					// The buttons stay inert — they would drive the quit — but embeds are
 					// navigation, so they stay clickable for checking what a note points at.
-					onOpenEmbed: ( linktext ) => {
+					onOpenLink: ( linktext ) => {
 						void this.app.workspace.openLinkText( linktext, '', false );
 					}
 				}

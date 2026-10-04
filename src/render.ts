@@ -17,12 +17,13 @@ export interface ReflectionRenderOptions {
 	interactive: boolean;
 	onChoose?(button: ReflectButton): void;
 	/**
-	 * Called with an embedded note's linktext when its body is clicked.
+	 * Called with a linktext when something in the body that points somewhere is clicked: a
+	 * wikilink, or the body of an embed.
 	 *
-	 * Omit to leave embeds inert — which is what a caller that only wants to show something
-	 * should do.
+	 * Omit to leave both of them inert — which is what a caller that only wants to show
+	 * something should do.
 	 */
-	onOpenEmbed?(linktext: string): void;
+	onOpenLink?(linktext: string): void;
 }
 
 /**
@@ -49,21 +50,39 @@ export const INTERACTIVE_CONTENT_SELECTOR = [
 ].join( ', ' );
 
 /**
- * Make embedded notes clickable.
+ * Wire the body's own navigation.
  *
- * Obsidian renders an embed as `<span class="internal-embed markdown-embed" src="<linktext>">`
- * with the note's content rendered inside it, and only handles navigation for
- * `.internal-link` — so clicking the embed's body does nothing at all. The reflection content
- * is often a pointer at somewhere else, so the whole embed is wired to navigate.
+ * Two cases, both of which fail if left to Obsidian:
  *
- * A click that lands on something already interactive inside the embed is left alone: those
- * belong to the embedded content, not to the embed. Enabling this means a click anywhere on
- * the embed navigates, including a click that follows selecting text in it.
+ * - **Wikilinks.** Obsidian's global click handling expects the link to sit inside a view it
+ *   can take a source path from. This body is rendered into a bare container, so there is no
+ *   such context, and whether the click navigates is not dependable.
+ * - **Embeds.** Obsidian renders one as `<span class="internal-embed" src="<linktext>">`
+ *   with the note's content inside it, and never handles navigation for the body at all.
+ *
+ * So both are opened here, through the same callback. A click that lands on something already
+ * interactive *inside* an embed is left alone — those belong to the embedded content, not to
+ * the embed — and a click with a modifier is left to Obsidian, which is what gives
+ * Ctrl/Cmd-click its open-in-a-new-pane behaviour. Making the whole embed clickable does mean
+ * a click after selecting text inside it also navigates.
  */
-function installEmbedNavigation( host: HTMLElement, open: ( linktext: string ) => void ): void {
+function installLinkNavigation( host: HTMLElement, open: ( linktext: string ) => void ): void {
 	host.addEventListener( 'click', ( event ) => {
 		const target = event.target as HTMLElement | null;
 		if ( !target || typeof target.closest !== 'function' ) return;
+
+		// Modified clicks stay with Obsidian.
+		if ( event.button !== 0 || event.ctrlKey || event.metaKey || event.altKey || event.shiftKey ) return;
+
+		const link = target.closest( 'a.internal-link, a[data-href], .internal-link[data-href]' );
+		if ( link ) {
+			const linktext = link.getAttribute( 'data-href' );
+			if ( !linktext ) return;
+			event.preventDefault();
+			event.stopPropagation();
+			open( linktext );
+			return;
+		}
 
 		const embed = target.closest( '.internal-embed' );
 		if ( !embed ) return;
@@ -109,7 +128,7 @@ export function renderReflection(
 		} );
 
 	// Wired before the render resolves, since the handler delegates from the body.
-	if ( options.onOpenEmbed ) installEmbedNavigation( body, options.onOpenEmbed );
+	if ( options.onOpenLink ) installLinkNavigation( body, options.onOpenLink );
 
 	// The accented button is the intended answer, so it is the one that keeps the user in
 	// the app: the first button that cancels the quit, or the first button when the row has

@@ -1,4 +1,4 @@
-import { App, PluginSettingTab, Setting } from 'obsidian';
+import { App, Platform, PluginSettingTab, Setting } from 'obsidian';
 import { ContentEditModal } from './edit-modal';
 import { NoteSuggest } from './file-suggest';
 import type CloseReflectPlugin from './plugin';
@@ -129,6 +129,26 @@ export class CloseReflectSettingTab extends PluginSettingTab {
 					settings.timeoutAction = value as TimeoutAction;
 					await save();
 				} ) );
+
+		// ── Mobile ─────────────────────────────────────────────────────────────
+		// Only on mobile: these describe gestures that platform has and the desktop does not.
+		if ( Platform.isMobileApp ) {
+			new Setting( containerEl ).setName( 'Mobile' ).setHeading();
+
+			new Setting( containerEl )
+				.setName( 'Ask on the back button')
+				.setDesc( 'The prompt appears when the back button would leave the app. A press with somewhere to go back to is navigation and is left alone.' )
+				.addToggle( ( toggle ) => toggle
+					.setValue( settings.mobileBackButton )
+					.onChange( async ( value ) => { settings.mobileBackButton = value; await save(); } ) );
+
+			new Setting( containerEl )
+				.setName( 'Ask on going back to the home screen' )
+				.setDesc( 'The prompt appears when the app is sent to the background, and is waiting when you come back. That gesture cannot be cancelled, and switching apps briefly counts, so this is off by default.' )
+				.addToggle( ( toggle ) => toggle
+					.setValue( settings.mobileGoingHome )
+					.onChange( async ( value ) => { settings.mobileGoingHome = value; await save(); } ) );
+		}
 
 		// ── Diagnostics ────────────────────────────────────────────────────────
 		new Setting( containerEl ).setName( 'Diagnostics' ).setHeading();
