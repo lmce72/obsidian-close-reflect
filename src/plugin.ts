@@ -168,6 +168,13 @@ export default class CloseReflectPlugin extends Plugin {
 	private mobileBackHandle: CapacitorListenerHandle | null = null;
 	/** The app-state subscription, likewise. */
 	private mobileStateHandle: CapacitorListenerHandle | null = null;
+	/**
+	 * Notices present at the end of the previous back press.
+	 *
+	 * Obsidian's back handling raises its "press back again to exit" notice synchronously, so
+	 * anything in this set that is new on the next press is that notice — see handleMobileBack().
+	 */
+	private backNotices = new Set<Element>();
 
 	/** The main window's `close` listener, once it has been installed. */
 	private mainWindowGuard: { win: RemoteWindow; handler: ( event: RemoteCloseEvent ) => void } | null = null;
@@ -455,6 +462,14 @@ export default class CloseReflectPlugin extends Plugin {
 	private handleQuit(tasks: QuitTasks): void {
 		trace('handleQuit:enter', { leaving: this.leaving, holding: this.holding, count: this.interceptCount });
 		try {
+			if (this.isAppQuitting()) {
+				// A menu quit, a shortcut quit or a restart is the app being taken away, not the
+				// user closing this window. Intercepting those would interrupt an update's
+				// relaunch to ask a question about the session it is ending anyway.
+				this.log('the app itself is quitting, not the window closing; not intercepting');
+				trace('handleQuit:skip-app-quitting');
+				return;
+			}
 			if (this.leaving) {
 				this.log('leave was chosen; not intercepting this quit');
 				trace('handleQuit:skip-leaving');
@@ -880,6 +895,29 @@ export default class CloseReflectPlugin extends Plugin {
 		}
 	}
 
+	/**
+	 * Whether the whole app is on its way out, rather than just this window closing.
+	 *
+	 * Obsidian's main process keeps one flag for "the app is quitting" and sets it for
+	 * `app.quit()` — a menu quit, a shortcut quit, and a restart — but never for a window
+	 * close. That flag is what `is-quitting` reports, and it is the only thing that separates
+	 * the two here: by the time this runs, `is-closing` is true either way.
+	 */
+	private isAppQuitting(): boolean {
+		if ( !Platform.isDesktopApp ) return false;
+		try {
+			const electron = ( window as unknown as {
+				electron?: { ipcRenderer?: { sendSync?( channel: string ): unknown } };
+			} ).electron;
+			return electron?.ipcRenderer?.sendSync?.( 'is-quitting' ) === true;
+		} catch (error) {
+			// Unreadable means unknown; treating it as a window close keeps the prompt, which is
+			// the behaviour that existed before this check.
+			this.error( 'could not read the quitting state; treating this as a window close:', error );
+			return false;
+		}
+	}
+
 	// ── Mobile ─────────────────────────────────────────────────────────────────
 
 	/**
@@ -918,12 +956,24 @@ export default class CloseReflectPlugin extends Plugin {
 	 * A back press.
 	 *
 	 * Capacitor delivers the event to every listener and offers no way to stop the others, so
-	 * this runs alongside Obsidian's own handler rather than replacing it — it can answer the
-	 * presses that matter and let the rest through. The ones that matter are the presses
-	 * Obsidian would use to leave; a press with somewhere to go back to is navigation.
+	 * this runs alongside Obsidian's own handler rather than replacing it — it answers the
+	 * presses that matter and lets the rest through.
+	 *
+	 * Capacitor calls listeners in registration order, and Obsidian registers its own long
+	 * before this plugin loads. So by the time this runs, Obsidian has already acted: it may
+	 * have collapsed a sidebar, gone back a note, or raised its "press back again to exit"
+	 * notice. That rules out deciding from the workspace state — a sidebar it just collapsed
+	 * reads exactly like "both sidebars are closed", which is the shape of leaving.
+	 *
+	 * The notice is the honest signal instead: Obsidian raises it on the one branch that
+	 * actually leaves, and on no other. So the prompt follows the notice.
 	 */
 	private handleMobileBack(): void {
-		if ( !this.isAboutToLeave() ) return;
+		const notices = new Set<Element>( document.querySelectorAll( '.notice-container .notice' ) );
+		const raised = [ ...notices ].some( ( notice ) => !this.backNotices.has( notice ) );
+		this.backNotices = notices;
+
+		if ( !raised ) return;
 		this.showMobilePrompt( 'back button' );
 	}
 
@@ -955,32 +1005,6 @@ export default class CloseReflectPlugin extends Plugin {
 				this.holding = false;
 				this.error( 'showing the prompt failed:', error );
 			} );
-	}
-
-	/**
-	 * Whether Obsidian's own back handling is about to leave the app rather than navigate.
-	 *
-	 * Mirroring that condition is what keeps the prompt off the back gesture's normal job:
-	 * Obsidian only reaches "press back again to exit" once both sidebars are collapsed and
-	 * the active leaf has nothing left to go back to.
-	 */
-	private isAboutToLeave(): boolean {
-		try {
-			const workspace = this.app.workspace as unknown as {
-				leftSplit?: { collapsed?: boolean };
-				rightSplit?: { collapsed?: boolean };
-				activeLeaf?: { history?: { backHistory?: unknown[] } };
-			};
-
-			const sidesClosed = ( workspace.leftSplit?.collapsed ?? true )
-				&& ( workspace.rightSplit?.collapsed ?? true );
-			if ( !sidesClosed ) return false;
-
-			return ( workspace.activeLeaf?.history?.backHistory?.length ?? 0 ) === 0;
-		} catch (error) {
-			this.error( 'could not read the workspace state; not intercepting this back press:', error );
-			return false;
-		}
 	}
 
 	private handleBeforeUnload(event: BeforeUnloadEvent): void {

@@ -1283,6 +1283,7 @@ class CloseReflectPlugin extends import_obsidian7.Plugin {
   capacitorApp = null;
   mobileBackHandle = null;
   mobileStateHandle = null;
+  backNotices = new Set;
   mainWindowGuard = null;
   pendingCloseEvent = null;
   async onload() {
@@ -1478,6 +1479,11 @@ class CloseReflectPlugin extends import_obsidian7.Plugin {
   handleQuit(tasks) {
     trace("handleQuit:enter", { leaving: this.leaving, holding: this.holding, count: this.interceptCount });
     try {
+      if (this.isAppQuitting()) {
+        this.log("the app itself is quitting, not the window closing; not intercepting");
+        trace("handleQuit:skip-app-quitting");
+        return;
+      }
       if (this.leaving) {
         this.log("leave was chosen; not intercepting this quit");
         trace("handleQuit:skip-leaving");
@@ -1747,6 +1753,17 @@ class CloseReflectPlugin extends import_obsidian7.Plugin {
       this.error("failed to mark the window close event:", error);
     }
   }
+  isAppQuitting() {
+    if (!import_obsidian7.Platform.isDesktopApp)
+      return false;
+    try {
+      const electron = window.electron;
+      return electron?.ipcRenderer?.sendSync?.("is-quitting") === true;
+    } catch (error) {
+      this.error("could not read the quitting state; treating this as a window close:", error);
+      return false;
+    }
+  }
   syncMobileHandlers() {
     if (!import_obsidian7.Platform.isMobileApp)
       return;
@@ -1771,7 +1788,10 @@ class CloseReflectPlugin extends import_obsidian7.Plugin {
     }
   }
   handleMobileBack() {
-    if (!this.isAboutToLeave())
+    const notices = new Set(document.querySelectorAll(".notice-container .notice"));
+    const raised = [...notices].some((notice) => !this.backNotices.has(notice));
+    this.backNotices = notices;
+    if (!raised)
       return;
     this.showMobilePrompt("back button");
   }
@@ -1793,18 +1813,6 @@ class CloseReflectPlugin extends import_obsidian7.Plugin {
       this.holding = false;
       this.error("showing the prompt failed:", error);
     });
-  }
-  isAboutToLeave() {
-    try {
-      const workspace = this.app.workspace;
-      const sidesClosed = (workspace.leftSplit?.collapsed ?? true) && (workspace.rightSplit?.collapsed ?? true);
-      if (!sidesClosed)
-        return false;
-      return (workspace.activeLeaf?.history?.backHistory?.length ?? 0) === 0;
-    } catch (error) {
-      this.error("could not read the workspace state; not intercepting this back press:", error);
-      return false;
-    }
   }
   handleBeforeUnload(event) {
     const holding = this.holding;

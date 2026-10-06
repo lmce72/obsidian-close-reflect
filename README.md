@@ -47,6 +47,21 @@ Every failure path fails open: an unanswered prompt follows the configured timeo
 and a prompt that could not be shown at all releases the quit, so a broken overlay can never
 leave the app unclosable.
 
+## What counts as leaving
+
+Only a **window close** raises the prompt on the desktop — clicking the ✕, or anything else
+that closes the window.
+
+A menu quit, a keyboard shortcut quit, and a **restart** do not. Those all go through
+`app.quit()`, which sets a flag the window close never touches, and the plugin reads that
+flag (`is-quitting`) to tell them apart. Intercepting them would mean stopping an update's
+relaunch to ask a question about the session it is ending anyway.
+
+An in-place reload — **Reload app without saving**, switching language or vault, toggling
+restricted mode — never reaches the prompt either, and needs no special handling: Obsidian
+does those with `window.location.reload()`, which never touches the window close path, so the
+`quit` event is not fired at all.
+
 ## On mobile
 
 Mobile has no quit to intercept — the `quit` event is fired from inside Obsidian's Electron
@@ -55,13 +70,20 @@ two of them, each behind its own toggle:
 
 | Gesture | What happens |
 | --- | --- |
-| Back button | The prompt appears when the back button *would leave the app*. A press with a note to go back to, or a sidebar to collapse, is navigation and is left alone — the plugin mirrors the condition Obsidian's own handler uses. |
+| Back button | The prompt follows Obsidian's own "press back again to exit" notice. A press that goes back a note, or collapses a sidebar, raises no notice and is left alone. |
 | Going back to the home screen | The prompt is raised as the app is backgrounded, and is waiting when you come back. |
 
-There is an asymmetry worth knowing. Capacitor delivers the back button to every listener and
-offers no way to stop the others, so this runs *alongside* Obsidian's handler rather than
-replacing it: pressing back twice in quick succession still sends the app to the background,
-because that second press is Obsidian's. And backgrounding cannot be cancelled at all — the
+Reading Obsidian's notice is what makes the timing right. Capacitor calls listeners in
+registration order and Obsidian registered its own long before this plugin loaded, so by the
+time the plugin's listener runs Obsidian has already acted — collapsed a sidebar, gone back a
+note, or raised the notice. That rules out deciding from the workspace state, because a
+sidebar Obsidian just collapsed reads exactly like "both sidebars are closed", which is the
+shape of leaving.
+
+There is a further asymmetry. Capacitor delivers the back button to every listener and offers
+no way to stop the others, so this runs *alongside* Obsidian's handler rather than replacing
+it: pressing back twice in quick succession still sends the app to the background, because
+that second press is Obsidian's. And backgrounding cannot be cancelled at all — the
 app is already gone — which is why that second toggle is off by default and why "cancel the
 quit" on mobile simply means the prompt closes.
 
