@@ -1,9 +1,9 @@
 {
  "id": "close-reflect",
  "name": "Close Reflect",
- "version": "1.3.0",
+ "version": "1.3.1",
  "minAppVersion": "1.5.0",
- "description": "Intercept Obsidian leaving — the desktop quit or the mobile back gestures — and show a reflection prompt with an editable title, Markdown body and action buttons.",
+ "description": "Show a reflection prompt — with an editable title, Markdown body and action buttons — when the app quits or leaves through the mobile back gestures.",
  "author": "CoreVortex",
  "authorUrl": "https://github.com/lmce72",
  "isDesktopOnly": false
