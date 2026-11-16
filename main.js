@@ -1221,6 +1221,53 @@ function runCommand(app, commandId, button, report) {
   }
 }
 
+// src/windows-close.ts
+function installWindowsClose(onClose) {
+  const host = window;
+  const channel = `close-reflect:${crypto.randomUUID()}`;
+  const create = host.electron.remote.require("vm").runInThisContext(`
+		(win, channel) => {
+			let released = false;
+			const handler = event => {
+				if (released) return;
+				event.preventDefault();
+				// Obsidian sets this before our listener; a cancelled close is no longer closing.
+				win.closing = false;
+				win.webContents.send(channel);
+			};
+			const dispose = () => {
+				win.removeListener('close', handler);
+				win.webContents.removeListener('did-start-loading', dispose);
+				win.webContents.removeListener('render-process-gone', dispose);
+			};
+			win.on('close', handler);
+			win.webContents.on('did-start-loading', dispose);
+			win.webContents.on('render-process-gone', dispose);
+			return {
+				release() { released = true; },
+				rearm() { released = false; },
+				dispose
+			};
+		}
+	`);
+  host.electron.ipcRenderer.on(channel, onClose);
+  let guard;
+  try {
+    guard = create(host.electronWindow, channel);
+  } catch (error) {
+    host.electron.ipcRenderer.removeListener(channel, onClose);
+    throw error;
+  }
+  return {
+    release: () => guard.release(),
+    rearm: () => guard.rearm(),
+    dispose: () => {
+      host.electron.ipcRenderer.removeListener(channel, onClose);
+      guard.dispose();
+    }
+  };
+}
+
 // src/plugin.ts
 var DIAG_LIMIT = 60;
 var HEARTBEAT_MS = 2000;
@@ -1286,6 +1333,7 @@ class CloseReflectPlugin extends import_obsidian7.Plugin {
   backNotices = new Set;
   mainWindowGuard = null;
   pendingCloseEvent = null;
+  windowsGuard = null;
   async onload() {
     trace("onload:begin", { tracePath, mobile: import_obsidian7.Platform.isMobileApp, desktop: import_obsidian7.Platform.isDesktopApp });
     this.unloaded = false;
@@ -1317,6 +1365,8 @@ class CloseReflectPlugin extends import_obsidian7.Plugin {
   onunload() {
     trace("onunload");
     this.unloaded = true;
+    this.windowsGuard?.dispose();
+    this.windowsGuard = null;
     this.pendingCloseEvent = null;
     removeListener(this.mobileBackHandle);
     removeListener(this.mobileStateHandle);
@@ -1673,6 +1723,7 @@ class CloseReflectPlugin extends import_obsidian7.Plugin {
       this.leavingTimer = null;
       if (this.leaving) {
         this.leaving = false;
+        this.windowsGuard?.rearm();
         this.warn("leave did not close the app; re-arming interception");
       }
     }, 8000);
@@ -1709,6 +1760,36 @@ class CloseReflectPlugin extends import_obsidian7.Plugin {
   installMainWindowGuard() {
     if (!import_obsidian7.Platform.isDesktopApp)
       return;
+    if (import_obsidian7.Platform.isWin) {
+      try {
+        this.windowsGuard = installWindowsClose(() => {
+          if (this.unloaded || this.holding)
+            return;
+          if (this.isAppQuitting() || this.interceptCount >= this.settings.intercepts) {
+            this.windowsGuard?.release();
+            window.close();
+            return;
+          }
+          this.interceptCount += 1;
+          this.holding = true;
+          this.showModal().then((outcome) => {
+            this.holding = false;
+            if (this.unloaded)
+              return;
+            if (this.letsTheAppGo(outcome)) {
+              this.windowsGuard?.release();
+              this.allowTheQuit();
+              window.close();
+            } else if (outcome.kind === "button" && outcome.button.action !== "stay") {
+              performButtonAction(this.app, outcome.button, (message, error) => this.error(message, error));
+            }
+          });
+        });
+        return;
+      } catch (error) {
+        this.error("failed to install synchronous Windows close guard:", error);
+      }
+    }
     try {
       const host = window;
       const remote = host.electron?.remote;

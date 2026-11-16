@@ -6,6 +6,7 @@ import { splitFrontmatter, stripFrontmatter } from './note-text';
 import { CloseReflectSettingTab } from './settings';
 import { MAX_REMEMBERED_CHARS, migrateSettings } from './types';
 import { performButtonAction } from './actions';
+import { installWindowsClose } from './windows-close';
 import type { CloseReflectSettings, QuitTasks, ReflectButton, ReflectOutcome } from './types';
 
 /** How many diagnostic entries to keep. Heartbeats make this fill up quickly. */
@@ -187,6 +188,7 @@ export default class CloseReflectPlugin extends Plugin {
 	 * is made once the decision is in, not during dispatch.
 	 */
 	private pendingCloseEvent: RemoteCloseEvent | null = null;
+	private windowsGuard: ReturnType<typeof installWindowsClose> | null = null;
 
 	async onload(): Promise<void> {
 		trace('onload:begin', { tracePath: tracePath, mobile: Platform.isMobileApp, desktop: Platform.isDesktopApp });
@@ -234,6 +236,8 @@ export default class CloseReflectPlugin extends Plugin {
 	onunload(): void {
 		trace('onunload');
 		this.unloaded = true;
+		this.windowsGuard?.dispose();
+		this.windowsGuard = null;
 		this.pendingCloseEvent = null;
 		removeListener( this.mobileBackHandle );
 		removeListener( this.mobileStateHandle );
@@ -749,6 +753,7 @@ export default class CloseReflectPlugin extends Plugin {
 			this.leavingTimer = null;
 			if (this.leaving) {
 				this.leaving = false;
+				this.windowsGuard?.rearm();
 				this.warn('leave did not close the app; re-arming interception');
 			}
 		}, 8000);
@@ -815,6 +820,35 @@ export default class CloseReflectPlugin extends Plugin {
 		// The guard exists to stop Obsidian's main process force-closing the window. There is
 		// no such process on mobile, and no `@electron/remote` either.
 		if ( !Platform.isDesktopApp ) return;
+		if (Platform.isWin) {
+			try {
+				this.windowsGuard = installWindowsClose(() => {
+					if (this.unloaded || this.holding) return;
+					if (this.isAppQuitting() || this.interceptCount >= this.settings.intercepts) {
+						this.windowsGuard?.release();
+						window.close();
+						return;
+					}
+					// Windows has already cancelled the native close; no quit tasks ran yet.
+					this.interceptCount += 1;
+					this.holding = true;
+					void this.showModal().then(outcome => {
+						this.holding = false;
+						if (this.unloaded) return;
+						if (this.letsTheAppGo(outcome)) {
+							this.windowsGuard?.release();
+							this.allowTheQuit();
+							window.close();
+						} else if (outcome.kind === 'button' && outcome.button.action !== 'stay') {
+							performButtonAction(this.app, outcome.button, (message, error) => this.error(message, error));
+						}
+					});
+				});
+				return;
+			} catch (error) {
+				this.error('failed to install synchronous Windows close guard:', error);
+			}
+		}
 		try {
 			const host = window as unknown as { electron?: RemoteElectron; electronWindow?: RemoteWindow };
 			const remote = host.electron?.remote;

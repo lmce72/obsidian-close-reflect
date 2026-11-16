@@ -16,6 +16,24 @@ Limitations.
 
 ## How the interception works
 
+### Windows close guard
+
+On Windows, the plugin cancels the native `BrowserWindow.close` event synchronously in
+the main process, then sends a private IPC message to show the reflection prompt. Renderer
+callbacks registered through `@electron/remote` are asynchronous; cancelling from those
+callbacks cannot reliably stop Obsidian's three-second forced destruction.
+
+The main-process handler is fixed plugin source compiled with Node's `vm` module; user
+text is never evaluated. Choosing to leave releases the guard and closes through Obsidian's
+normal saving path. Staying keeps the original quit hook intact. The handler is removed on
+plugin unload, page reload, or renderer failure. This uses private Obsidian/Electron APIs
+and may need changes after an Obsidian update.
+
+Validated on Windows with Obsidian 1.14.4 in an isolated empty vault: holding beyond three
+seconds, staying and closing again, timeout-to-stay, plugin unload/reload, and confirmed exit.
+macOS, Linux, mobile devices, app updates/restarts, and the declared minimum version were
+not re-tested for this change. The earlier interception design below remains the fallback.
+
 Obsidian does not make this easy, and the interesting part of this plugin is the three
 obstacles it works around. All three were established by reading Obsidian 1.13.7's own
 bundle, and each one is verified by the plugin's own developer log.
@@ -156,6 +174,7 @@ a plain textarea.
 bun install
 bun run build      # bundles src/main.ts -> main.js
 bun run typecheck  # tsc --noEmit
+bun test          # native Windows guard regression tests
 ```
 
 Copy `main.js`, `manifest.json` and `styles.css` into
